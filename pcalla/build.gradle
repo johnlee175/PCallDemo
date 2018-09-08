@@ -1,0 +1,11 @@
+group 'com.johnsoft.pcalla'
+version '1.0.0'
+
+apply plugin: 'java'
+
+sourceCompatibility = 1.7
+targetCompatibility = 1.7
+
+dependencies {
+    compileOnly fileTree(dir: 'libs', include: ['*.jar'])
+}
