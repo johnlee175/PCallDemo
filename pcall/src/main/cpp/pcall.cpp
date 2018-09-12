@@ -168,7 +168,7 @@ namespace profiler {
         callbacks.MethodExit = OnMethodExist;
         callbacks.SingleStep = OnSingleStep;
         callbacks.VMObjectAlloc = OnVMObjectAlloc;
-        callbacks.ClassFileLoadHook = OnClassFileLoadHook;
+        callbacks.ClassFileLoadHook = OnClassFileLoadHook; // use platform/tools/dexter
         callbacks.ClassPrepare = OnClassPrepare;
         CheckJvmtiError(jvmti_env, jvmti_env->SetEventCallbacks(&callbacks, sizeof(callbacks)));
         SetEventNotification(jvmti_env, JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD);
@@ -292,8 +292,8 @@ namespace profiler {
         // Load in pcall.dex.jar which should be in to data/data.
         std::string agent_lib_path(GetAppDataPath());
         agent_lib_path.append("pcall.dex.jar");
-        CheckJvmtiError(jvmti_env, jvmti_env->AddToBootstrapClassLoaderSearch(agent_lib_path.c_str()));
 
+        CheckJvmtiError(jvmti_env, jvmti_env->AddToBootstrapClassLoaderSearch(agent_lib_path.c_str()));
         ScopedLocalRef<jclass> finder_class(jni_env, jni_env->FindClass("com/johnsoft/pcalla/Finder"));
         if (finder_class.get() == nullptr) {
             LOGE("Failed to find Finder class.");
@@ -306,6 +306,34 @@ namespace profiler {
             }
         }
 
+        /*
+         * NOTE:
+         * because of `jvmti_env->AddToSystemClassLoaderSearch(agent_lib_path.c_str());` not work.
+         * use the following code instread: (There is no custom class load problem in this way)
+         */
+        /*
+        // ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        jclass Thread_class = jni_env->FindClass("java/lang/Thread");
+        jmethodID currentThread_method = jni_env->GetStaticMethodID(Thread_class, "currentThread", "()Ljava/lang/Thread;");
+        jobject thread = jni_env->CallStaticObjectMethod(Thread_class, currentThread_method);
+        jmethodID getContextClassLoader_method = jni_env->GetMethodID(Thread_class, "getContextClassLoader",
+                                                                      "()Ljava/lang/ClassLoader;");
+        jobject classLoader = jni_env->CallObjectMethod(thread, getContextClassLoader_method);
+
+        // ((BaseDexClassLoader) classLoader).addDexPath("the-dex-path");
+        jclass BaseDexClassLoader_class = jni_env->GetObjectClass(classLoader);
+        jmethodID addDexPath_method = jni_env->GetMethodID(BaseDexClassLoader_class, "addDexPath", "(Ljava/lang/String;)V");
+        jni_env->CallVoidMethod(classLoader, addDexPath_method, jni_env->NewStringUTF(agent_lib_path.c_str()));
+
+        // jclass clazz = (jclass) classLoader.loadClass("com.johnsoft.pcalla.Finder");
+        // Finder.init()
+        jmethodID loadClass_method = jni_env->GetMethodID(BaseDexClassLoader_class, "loadClass",
+                                                           "(Ljava/lang/String;)Ljava/lang/Class;");
+        jclass Finder_class = (jclass) jni_env->CallObjectMethod(classLoader, loadClass_method,
+                                                                  jni_env->NewStringUTF("com.johnsoft.pcalla.Finder"));
+        jmethodID init_method = jni_env->GetStaticMethodID(Finder_class, "init", "()V");
+        jni_env->CallStaticVoidMethod(Finder_class, init_method);
+        */
         return JNI_OK;
     }
 
