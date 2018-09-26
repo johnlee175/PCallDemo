@@ -32,9 +32,14 @@ public final class Finder {
                             Method setText = klass.getDeclaredMethod("setText", String.class);
                             setText.setAccessible(true);
                             setText.invoke(activity, "HHHHIIII");
-                            View view = findViewById(activity, apk, "ll");
+                            final View view = findViewById(activity, apk, "ll");
                             if (view != null) {
-                                view.setBackgroundColor(0xFF00FF0F);
+                                view.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        view.setBackgroundColor(0xFF00FF0F);
+                                    }
+                                });
                             }
                         }
                     }

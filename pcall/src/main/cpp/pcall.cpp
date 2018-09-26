@@ -3,6 +3,10 @@
 #include <inttypes.h>
 #include <dlfcn.h>
 
+#include "slicer/instrumentation.h"
+#include "slicer/reader.h"
+#include "slicer/writer.h"
+
 namespace profiler {
 
     // Retrieve the app's data directory path
@@ -12,6 +16,20 @@ namespace profiler {
         std::string so_path(dl_info.dli_fname);
         return so_path.substr(0, so_path.find_last_of('/') + 1);
     }
+
+    class JvmtiAllocator : public dex::Writer::Allocator {
+    public:
+        JvmtiAllocator(jvmtiEnv* jvmti_env) : jvmti_env_(jvmti_env) {}
+
+        virtual void* Allocate(size_t size) {
+            return profiler::Allocate(jvmti_env_, size);
+        }
+
+        virtual void Free(void* ptr) { profiler::Deallocate(jvmti_env_, ptr); }
+
+    private:
+        jvmtiEnv* jvmti_env_;
+    };
 
     extern "C" {
 
@@ -128,6 +146,63 @@ namespace profiler {
         if (name != nullptr) {
             LOGE("OnClassFileLoaded: %s\n", name);
         }
+
+        bool transformed = true;
+        bool a = strcmp(name, "com/johnsoft/pcalldemo/SettingsActivity") == 0;
+        bool b = strcmp(name, "com/johnsoft/pcalldemo/SettingsActivity$1") == 0;
+        if (a || b) {
+            dex::Reader reader(class_data, class_data_len);
+            std::string desc = "L" + std::string(name) + ";";
+            auto class_index = reader.FindClassIndex(desc.c_str());
+            if (class_index == dex::kNoIndex) {
+                LOGE("Could not find class index for %s", name);
+                return;
+            }
+
+            reader.CreateClassIr(class_index);
+            auto dex_ir = reader.GetIr();
+
+            if (a) {
+                slicer::MethodInstrumenter mi1(dex_ir);
+                mi1.AddTransformation<slicer::ExitHook>(ir::MethodId("Lcom/johnsoft/pcalla/Replacer;", "wrapGetString"));
+                if (!mi1.InstrumentMethod(ir::MethodId(desc.c_str(), "getString", "()Ljava/lang/String;"))) {
+                    LOGE("Error instrumenting SettingsActivity.getString");
+                }
+
+                slicer::MethodInstrumenter mi2(dex_ir);
+                mi2.AddTransformation<slicer::EntryHook>(ir::MethodId("Lcom/johnsoft/pcalla/Replacer;", "wrapDoSomething"), true);
+                if (!mi2.InstrumentMethod(ir::MethodId(desc.c_str(), "doSomething", "()V"))) {
+                    LOGE("Error instrumenting SettingsActivity.doSomething");
+                }
+            }
+
+            if (b) {
+                slicer::MethodInstrumenter mi3(dex_ir);
+                mi3.AddTransformation<slicer::DetourVirtualInvoke>(ir::MethodId("Lcom/johnsoft/pcalldemo/SettingsActivity;",
+                                                                                "colorIt", "()V"),
+                                                                   ir::MethodId("Lcom/johnsoft/pcalla/Replacer;",
+                                                                                "replaceColorIt"));
+                if (!mi3.InstrumentMethod(ir::MethodId(desc.c_str(), "onClick", "(Landroid/view/View;)V"))) {
+                    LOGE("Error instrumenting SettingsActivity$1.onClick");
+                }
+            }
+
+            size_t new_image_size = 0;
+            dex::u1* new_image = nullptr;
+            dex::Writer writer(dex_ir);
+
+            JvmtiAllocator allocator(jvmti_env);
+            new_image = writer.CreateImage(&allocator, &new_image_size);
+
+            *new_class_data_len = new_image_size;
+            *new_class_data = new_image;
+        } else {
+            transformed = false;
+        }
+
+        if (transformed) {
+            LOGE("Transformed class: %s", name);
+        }
     }
 
     int JNICALL HeapIterationCallback(jlong class_tag,
@@ -211,6 +286,7 @@ namespace profiler {
                                                              JVMTI_THREAD_NORM_PRIORITY));
 
         // dump loaded classes
+        std::vector<jclass> classes;
         jint class_count;
         jclass *loaded_classes;
         char *sig_mutf8;
@@ -219,9 +295,21 @@ namespace profiler {
             CheckJvmtiError(jvmti_env, jvmti_env->GetClassSignature(loaded_classes[i], &sig_mutf8, nullptr));
             if (sig_mutf8 != nullptr) {
                 LOGE("Loaded class %s\n", sig_mutf8);
+                if (strcmp(sig_mutf8, "Lcom/johnsoft/pcalldemo/SettingsActivity;") == 0
+                        ||strcmp(sig_mutf8, "Lcom/johnsoft/pcalldemo/SettingsActivity$1;") == 0) {
+                    classes.push_back(loaded_classes[i]);
+                }
                 Deallocate(jvmti_env, (unsigned char *) sig_mutf8);
             }
         }
+
+        // instrumentation
+        if (classes.size() > 0) {
+            CheckJvmtiError(jvmti_env, jvmti_env->RetransformClasses(classes.size(), &classes[0]));
+        }
+
+        jvmti_env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE,
+                                            nullptr);
 
         for (int i = 0; i < class_count; ++i) {
             jni_env->DeleteLocalRef(loaded_classes[i]);
